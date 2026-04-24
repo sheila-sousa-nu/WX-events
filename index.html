@@ -625,63 +625,73 @@ function renderCSAT() {
   const D = RAW.csat;
   const cy = D.year;
 
-  // Apply year + month filter to monthly data
+  // ── Filter monthly by year + month
   let filtMonthly = D.monthly;
   if (filterYear !== 'all') filtMonthly = filtMonthly.filter(r => String(r.year) === filterYear);
   if (filterMonth !== 'all') filtMonthly = filtMonthly.filter(r => String(r.month) === filterMonth);
 
-  // KPIs: focus on results, not counts
+  // ── Compute KPI values based on active filters
   const allYears = cy.filter(r=>r.avg_overall);
-  const overallAvg = allYears.reduce((s,r)=>s+(r.avg_overall||0),0) / allYears.length;
-  const yr2025 = cy.find(r=>r.year===2025);
-  const yr2024 = cy.find(r=>r.year===2024);
-  const latestMonthAvg = filtMonthly.length ? (filtMonthly.reduce((s,r)=>s+(r.avg||0),0)/filtMonthly.filter(r=>r.avg).length) : null;
+  const historicalAvg = allYears.reduce((s,r)=>s+(r.avg_overall||0),0)/allYears.length;
+
+  // Filtered note: if year+month selected → show that month avg; if year only → show year avg; else → historical
+  let filteredNote = null, filteredLabel = '', filteredSub = '';
+  if (filterYear !== 'all' && filterMonth !== 'all') {
+    const rec = D.monthly.find(r => String(r.year)===filterYear && String(r.month)===filterMonth);
+    filteredNote = rec?.avg || null;
+    const mName = MONTHS[parseInt(filterMonth)-1];
+    filteredLabel = mName+' '+filterYear;
+    const prevRec = D.monthly.find(r => String(r.year)===String(parseInt(filterYear)-1) && String(r.month)===filterMonth);
+    filteredSub = prevRec ? 'vs '+prevRec.avg.toFixed(2)+' em '+MONTHS[parseInt(filterMonth)-1]+' '+(parseInt(filterYear)-1) : 'Mês selecionado';
+  } else if (filterYear !== 'all') {
+    const rec = cy.find(r=>String(r.year)===filterYear);
+    filteredNote = rec?.avg_overall || null;
+    filteredLabel = 'Nota '+filterYear;
+    const prevRec = cy.find(r=>r.year===parseInt(filterYear)-1);
+    filteredSub = prevRec ? 'vs '+prevRec.avg_overall.toFixed(2)+' em '+(parseInt(filterYear)-1) : 'Ano selecionado';
+  } else {
+    filteredNote = historicalAvg;
+    filteredLabel = 'Nota Geral Histórica';
+    filteredSub = 'Média 2022–2026';
+  }
+
+  // Country note (if country filter active)
+  const countryRec = filterCountry !== 'all' ? D.country.find(c=>c.country===filterCountry) : null;
+
   const distAmei = D.rating_dist.find(r=>r.rating.includes('Amei'))?.count||0;
   const distTotal = D.rating_dist.reduce((s,r)=>s+r.count,0);
   const ameiPct = distTotal ? Math.round(distAmei/distTotal*100) : 0;
 
   renderKPIs('kpi-csat', [
-    { label: 'Nota Geral Histórica', value: overallAvg.toFixed(2)+'/5', sub: 'Média 2022–2026', color: '#00C97B' },
-    { label: 'Nota 2025', value: (yr2025?.avg_overall||0).toFixed(2)+'/5', sub: 'vs '+(yr2024?.avg_overall||0).toFixed(2)+' em 2024', color: '#820AD1' },
-    { label: 'Nota 2026', value: (cy.find(r=>r.year===2026)?.avg_overall||0).toFixed(2)+'/5', sub: 'Ano em andamento', color: '#3B82F6' },
-    { label: '"Amei!" (nota máx)', value: ameiPct+'%', sub: distAmei.toLocaleString('pt-BR')+' de '+distTotal.toLocaleString('pt-BR')+' respostas', color: '#F59E0B' },
+    { label: filteredLabel, value: filteredNote!=null ? filteredNote.toFixed(2)+'/5' : '—', sub: filteredSub, color: '#00C97B' },
+    { label: countryRec ? 'Nota · '+countryRec.country : 'Nota Histórica', value: countryRec ? countryRec.avg_overall.toFixed(2)+'/5' : historicalAvg.toFixed(2)+'/5', sub: countryRec ? countryRec.count+' avaliações' : 'Todos os países', color: '#820AD1' },
+    { label: 'Avaliações no período', value: filtMonthly.reduce((s,r)=>s+r.count,0).toLocaleString('pt-BR'), sub: filterYear!=='all'||filterMonth!=='all' ? 'Período filtrado' : 'Total histórico', color: '#3B82F6' },
+    { label: '"Amei!" (nota máx)', value: ameiPct+'%', sub: distAmei.toLocaleString('pt-BR')+' de '+distTotal.toLocaleString('pt-BR'), color: '#F59E0B' },
   ]);
 
-  // ── CHART 1: Resultado mensal por dimensão (foco no ano selecionado ou todos)
-  const dimYears = filterYear !== 'all' ? [parseInt(filterYear)] : D.years;
-  // For monthly dimension, we need per-dimension data — use the year data as reference
-  // and monthly overall as proxy
-  const dimMonthlyData = (field) => MONTHS.map((_,mi) => {
-    const pts = D.monthly.filter(r => {
-      if (filterYear !== 'all' && String(r.year) !== filterYear) return false;
-      return r.month === (mi+1);
-    });
-    if (!pts.length) return null;
-    // avg field only available at year level; use overall avg for monthly detail
-    return pts.reduce((s,r)=>s+(r.avg||0),0)/pts.filter(r=>r.avg).length || null;
-  });
-
-  // For per-dimension monthly, build from year-level data overlaid on monthly shape
-  const yearDimData = (field) => cy.map(r => r[field] || null);
+  // ── CHART 1: Resultado mensal — destaca período filtrado
+  const showYears = filterYear !== 'all' ? [parseInt(filterYear)] : D.years;
   mkChart('chart-csat-monthly-dim', 'line', {
     labels: MONTHS,
-    datasets: [
-      { label: 'Nota Geral', data: MONTHS.map((_,mi) => {
-          const m = mi+1;
-          const pts = D.monthly.filter(r => (filterYear==='all'||String(r.year)===filterYear) && r.month===m);
-          if (!pts.length) return null;
-          const valid = pts.filter(r=>r.avg);
-          return valid.length ? valid.reduce((s,r)=>s+r.avg,0)/valid.length : null;
-        }), borderColor: COLORS.purple, backgroundColor: COLORS.purple+'22', fill: true, tension: 0.35, borderWidth: 3, pointRadius: 5, spanGaps: true },
-    ]
+    datasets: showYears.map((yr,i) => {
+      const isFocus = filterYear==='all' || String(yr)===filterYear;
+      return {
+        label: String(yr), fill: isFocus, tension: 0.35, spanGaps: true,
+        borderWidth: isFocus ? 3 : 1.5, pointRadius: isFocus ? 5 : 2,
+        borderColor: PALETTE[i%PALETTE.length],
+        backgroundColor: isFocus ? PALETTE[i%PALETTE.length]+'22' : 'transparent',
+        data: MONTHS.map((_,mi) => {
+          const rec = D.monthly.find(r=>r.year===yr && r.month===(mi+1));
+          return rec?.avg || null;
+        })
+      };
+    })
   }, {
     scales: {
-      y: { min: 3.5, max: 5.2, grid: { color: '#F3F4F6' },
-           ticks: { callback: v => v.toFixed(1) } },
+      y: { min: 3.5, max: 5.2, grid: { color: '#F3F4F6' }, ticks: { callback: v => v.toFixed(1) } },
       x: { grid: { display: false } }
     },
-    plugins: { legend: { display: false },
-      tooltip: { callbacks: { label: ctx => 'Nota: ' + (ctx.raw||0).toFixed(2) } } }
+    plugins: { tooltip: { callbacks: { label: ctx => ctx.dataset.label+': '+(ctx.raw||0).toFixed(2) } } }
   });
 
   // ── CHART 2: Resultado anual por dimensão
